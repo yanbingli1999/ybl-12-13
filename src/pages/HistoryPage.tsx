@@ -4,6 +4,7 @@ import { useGameStore } from '../store/useGameStore';
 import { useShipStore } from '../store/useShipStore';
 import { BattleLog } from '../components/BattleLog/BattleLog';
 import { ShipStatus } from '../components/Ship/ShipStatus';
+import { EnemyGroup } from '../components/Ship/EnemyGroup';
 import type { BattleRecord } from '../types';
 
 export const HistoryPage: React.FC = () => {
@@ -166,9 +167,27 @@ export const HistoryPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-          <ShipStatus ship={battleState.player} isPlayer={true} />
-          <ShipStatus ship={battleState.enemy} isPlayer={false} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-4">
+          <div className="lg:col-span-4">
+            <ShipStatus ship={battleState.player} isPlayer={true} />
+          </div>
+          <div className="lg:col-span-8">
+            <div className="glass-panel neon-border-red p-4 rounded-xl">
+              <h3 className="text-lg font-display font-bold text-neon-red mb-4 flex items-center gap-2">
+                <span className="text-2xl">👾</span>
+                敌方舰队
+                <span className="text-sm font-normal text-gray-400 ml-2">
+                  ({battleState.enemies.filter(e => !e.isDestroyed).length} / {battleState.enemies.length})
+                </span>
+              </h3>
+              <EnemyGroup
+                enemies={battleState.enemies}
+                selectedTargetId={battleState.selectedTargetId}
+                onSelectTarget={() => {}}
+                disabled={true}
+              />
+            </div>
+          </div>
         </div>
 
         <BattleLog logs={battleState.logs} maxHeight="500px" />
@@ -261,12 +280,14 @@ export const HistoryPage: React.FC = () => {
                       {getResultIcon(record.result)}
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className={`font-display font-bold ${getResultColor(record.result).split(' ')[0]}`}>
                           {getResultText(record.result)}
                         </span>
                         <span className="text-gray-400">vs</span>
-                        <span className="text-white">{record.enemyName}</span>
+                        <span className="text-white">
+                          {record.enemyNames?.join('、') || '未知敌人'}
+                        </span>
                       </div>
                       <div className="flex items-center gap-4 text-xs text-gray-500 mt-1">
                         <span className="flex items-center gap-1">
@@ -285,9 +306,11 @@ export const HistoryPage: React.FC = () => {
                   <div className="flex items-center gap-4">
                     <div className="text-right text-sm">
                       <div className="text-gray-400">
-                        <span className="text-neon-green">{record.playerHpRemaining}</span>
-                        {' / '}
-                        <span className="text-neon-red">{record.enemyHpRemaining}</span>
+                        <span className="text-neon-green">玩家: {record.playerHpRemaining}</span>
+                        {' | '}
+                        <span className="text-neon-red">
+                          敌方: {record.enemiesHpRemaining?.reduce((a, b) => a + b, 0) || 0}
+                        </span>
                       </div>
                       {record.rewardEarned > 0 && (
                         <div className="text-neon-yellow font-display">

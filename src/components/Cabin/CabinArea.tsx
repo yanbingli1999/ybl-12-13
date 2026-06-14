@@ -1,6 +1,7 @@
 import React from 'react';
 import { useDiceStore } from '../../store/useDiceStore';
 import { useShipStore } from '../../store/useShipStore';
+import { useGameStore } from '../../store/useGameStore';
 import { CabinSlot } from './CabinSlot';
 import type { CabinType } from '../../types';
 
@@ -11,6 +12,7 @@ interface CabinAreaProps {
 export const CabinArea: React.FC<CabinAreaProps> = ({ disabled }) => {
   const { dice, assignDie } = useDiceStore();
   const { ship } = useShipStore();
+  const { battleState, setDieTarget } = useGameStore();
 
   const handleDrop = (cabinType: CabinType, dieId: string) => {
     assignDie(dieId, cabinType);
@@ -18,6 +20,10 @@ export const CabinArea: React.FC<CabinAreaProps> = ({ disabled }) => {
 
   const handleRemoveDie = (dieId: string) => {
     assignDie(dieId, null);
+  };
+
+  const handleSetDieTarget = (dieId: string, targetId: string | null) => {
+    setDieTarget(dieId, targetId);
   };
 
   const getDiceForCabin = (cabinType: CabinType) => {
@@ -47,6 +53,9 @@ export const CabinArea: React.FC<CabinAreaProps> = ({ disabled }) => {
               totalPoints={getTotalPoints(cabinType)}
               onDrop={handleDrop}
               onRemoveDie={handleRemoveDie}
+              onSetDieTarget={handleSetDieTarget}
+              enemies={battleState?.enemies || []}
+              selectedTargetId={battleState?.selectedTargetId || null}
               disabled={disabled}
             />
           );

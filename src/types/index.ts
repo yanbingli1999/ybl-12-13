@@ -1,10 +1,12 @@
 export type CabinType = 'engine' | 'shield' | 'weapon' | 'repair' | 'scanner';
+export type EnemyRole = 'mothership' | 'escort' | 'jammer' | 'supply';
 
 export interface Die {
   id: string;
   value: number;
   locked: boolean;
   assignedTo: CabinType | null;
+  targetId: string | null;
   isRolling: boolean;
 }
 
@@ -59,6 +61,9 @@ export interface Enemy {
   id: string;
   name: string;
   type: string;
+  role: EnemyRole;
+  priority: number;
+  isDestroyed: boolean;
   hp: number;
   maxHp: number;
   shield: number;
@@ -70,6 +75,9 @@ export interface Enemy {
   abilities: EnemyAbility[];
   description: string;
   sprite: string;
+  energyCostIncrease?: number;
+  healAmount?: number;
+  targetId?: string;
 }
 
 export type BattleLogType = 'damage' | 'heal' | 'shield' | 'effect' | 'system' | 'crit' | 'miss';
@@ -93,7 +101,8 @@ export interface BattleState {
   turn: number;
   phase: BattlePhase;
   player: Ship;
-  enemy: Enemy;
+  enemies: Enemy[];
+  selectedTargetId: string | null;
   logs: BattleLogEntry[];
   result: BattleResult;
   startTime: number;
@@ -147,10 +156,10 @@ export interface BattleRecord {
   endTime: number;
   result: BattleResult;
   turns: number;
-  enemyType: string;
-  enemyName: string;
+  enemyTypes: string[];
+  enemyNames: string[];
   playerHpRemaining: number;
-  enemyHpRemaining: number;
+  enemiesHpRemaining: number[];
   replayData: ReplayData;
   rewardEarned: number;
 }
@@ -187,6 +196,7 @@ export interface AllocationResult {
   cabinType: CabinType;
   totalPoints: number;
   diceIds: string[];
+  targetId: string | null;
   isOverheated: boolean;
 }
 

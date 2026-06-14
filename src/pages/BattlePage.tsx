@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Flag, SkipForward, RotateCcw, Trophy, Skull } from 'lucide-react';
+import { Play, Flag, SkipForward, RotateCcw, Trophy, Skull, Target, Info } from 'lucide-react';
 import { DiceArea } from '../components/Dice/DiceArea';
 import { CabinArea } from '../components/Cabin/CabinArea';
 import { ShipStatus } from '../components/Ship/ShipStatus';
-import { EnemyIntent } from '../components/Ship/EnemyIntent';
+import { EnemyGroup } from '../components/Ship/EnemyGroup';
 import { BattleLog } from '../components/BattleLog/BattleLog';
 import { FloatingText } from '../components/BattleLog/FloatingText';
 import { Modal } from '../components/UI/Modal';
@@ -11,6 +11,7 @@ import { useGameStore } from '../store/useGameStore';
 import { useDiceStore } from '../store/useDiceStore';
 import { useShipStore } from '../store/useShipStore';
 import { hasAnyDiceAssigned } from '../utils/dice';
+import { getRoleLabel } from '../data/enemies';
 
 export const BattlePage: React.FC = () => {
   const { 
@@ -21,6 +22,7 @@ export const BattlePage: React.FC = () => {
     fleeBattle, 
     resetBattle,
     setDifficulty,
+    setSelectedTarget,
     isReplaying,
   } = useGameStore();
   const { dice } = useDiceStore();
@@ -174,22 +176,49 @@ export const BattlePage: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-        <ShipStatus ship={battleState.player} isPlayer={true} />
-        
-        <div className="flex flex-col gap-4">
-          <EnemyIntent enemy={battleState.enemy} />
-          <div className="flex-1 flex items-center justify-center">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-4">
+        <div className="lg:col-span-4">
+          <ShipStatus ship={battleState.player} isPlayer={true} />
+          
+          <div className="mt-4 glass-panel neon-border p-4 rounded-xl">
             <div className="text-center">
-              <div className="text-6xl mb-2 animate-float">⚔️</div>
+              <div className="text-4xl mb-2 animate-float">⚔️</div>
               <div className="text-sm text-gray-400">
                 {isPlayerPhase ? '你的回合' : '敌方回合'}
               </div>
+              {battleState.enemies.filter(e => !e.isDestroyed).length > 1 && (
+                <div className="mt-3 pt-3 border-t border-space-600">
+                  <div className="flex items-center justify-center gap-2 text-xs text-gray-400 mb-2">
+                    <Target className="w-3 h-3" />
+                    <span>点击敌舰选择攻击目标</span>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+                    <Info className="w-3 h-3" />
+                    <span>可在武器舱为单个骰子指定目标</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
         
-        <ShipStatus ship={battleState.enemy} isPlayer={false} />
+        <div className="lg:col-span-8">
+          <div className="glass-panel neon-border-red p-4 rounded-xl">
+            <h3 className="text-lg font-display font-bold text-neon-red mb-4 flex items-center gap-2">
+              <span className="text-2xl">👾</span>
+              敌方舰队
+              <span className="text-sm font-normal text-gray-400 ml-2">
+                ({battleState.enemies.filter(e => !e.isDestroyed).length} / {battleState.enemies.length})
+              </span>
+            </h3>
+            <EnemyGroup
+              enemies={battleState.enemies}
+              selectedTargetId={battleState.selectedTargetId}
+              onSelectTarget={setSelectedTarget}
+              disabled={!isPlayerPhase || isReplaying}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -256,10 +285,34 @@ export const BattlePage: React.FC = () => {
               </div>
             </div>
             <div className="bg-space-900/50 p-3 rounded-lg">
-              <div className="text-gray-400">敌方HP</div>
+              <div className="text-gray-400">击毁敌舰</div>
               <div className="text-xl font-display font-bold text-neon-red">
-                {battleState.enemy.hp} / {battleState.enemy.maxHp}
+                {battleState.enemies.filter(e => e.isDestroyed).length} / {battleState.enemies.length}
               </div>
+            </div>
+          </div>
+
+          <div className="bg-space-900/50 p-4 rounded-lg mb-6 max-h-40 overflow-y-auto">
+            <div className="text-xs text-gray-400 mb-2">敌方舰队状态</div>
+            <div className="space-y-2">
+              {battleState.enemies.map((enemy, index) => (
+                <div key={enemy.id} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className={enemy.isDestroyed ? 'grayscale opacity-50' : ''}>
+                      {enemy.sprite}
+                    </span>
+                    <span className={enemy.isDestroyed ? 'text-gray-500 line-through' : 'text-white'}>
+                      {enemy.name}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      ({getRoleLabel(enemy.role)})
+                    </span>
+                  </div>
+                  <span className={`font-display font-bold ${enemy.isDestroyed ? 'text-gray-600' : enemy.hp > enemy.maxHp * 0.3 ? 'text-neon-green' : 'text-neon-red'}`}>
+                    {enemy.isDestroyed ? '已摧毁' : `${enemy.hp} / ${enemy.maxHp}`}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
 

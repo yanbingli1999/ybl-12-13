@@ -69,7 +69,6 @@ export function calculateCabinEffect(
   cabinType: CabinType,
   totalPoints: number,
   ship: Ship,
-  enemy: Enemy,
   config: GameConfig
 ): { 
   effect: string; 
@@ -156,22 +155,70 @@ export function checkOverheat(
 export function getAllocations(dice: Die[]): AllocationResult[] {
   const cabinTypes: CabinType[] = ['engine', 'shield', 'weapon', 'repair', 'scanner'];
   
-  return cabinTypes.map(type => {
-    const assignedDice = dice.filter(d => d.assignedTo === type);
-    const totalPoints = assignedDice.reduce((sum, d) => sum + d.value, 0);
-    
-    return {
-      cabinType: type,
-      totalPoints,
-      diceIds: assignedDice.map(d => d.id),
-      isOverheated: false,
-    };
-  }).filter(a => a.totalPoints > 0);
+  const allocations: AllocationResult[] = [];
+  
+  for (const type of cabinTypes) {
+    if (type === 'weapon') {
+      const targetGroups = new Map<string | null, Die[]>();
+      
+      const weaponDice = dice.filter(d => d.assignedTo === type);
+      for (const die of weaponDice) {
+        const targetId = die.targetId || null;
+        if (!targetGroups.has(targetId)) {
+          targetGroups.set(targetId, []);
+        }
+        targetGroups.get(targetId)!.push(die);
+      }
+      
+      for (const [targetId, targetDice] of targetGroups) {
+        const totalPoints = targetDice.reduce((sum, d) => sum + d.value, 0);
+        allocations.push({
+          cabinType: type,
+          totalPoints,
+          diceIds: targetDice.map(d => d.id),
+          targetId,
+          isOverheated: false,
+        });
+      }
+    } else {
+      const assignedDice = dice.filter(d => d.assignedTo === type);
+      const totalPoints = assignedDice.reduce((sum, d) => sum + d.value, 0);
+      
+      if (totalPoints > 0) {
+        allocations.push({
+          cabinType: type,
+          totalPoints,
+          diceIds: assignedDice.map(d => d.id),
+          targetId: null,
+          isOverheated: false,
+        });
+      }
+    }
+  }
+  
+  return allocations;
+}
+
+export function calculateEnergyCost(
+  dice: Die[],
+  config: GameConfig,
+  enemies: Enemy[]
+): number {
+  const totalDicePoints = dice.reduce((sum, d) => sum + d.value, 0);
+  let baseCost = Math.floor(totalDicePoints * config.energyCostPerPoint);
+  
+  const activeJammers = enemies.filter(e => !e.isDestroyed && e.role === 'jammer' && e.energyCostIncrease);
+  for (const jammer of activeJammers) {
+    baseCost += jammer.energyCostIncrease!;
+  }
+  
+  return baseCost;
 }
 
 export function executeEnemyIntent(
   enemy: Enemy,
   player: Ship,
+  enemies: Enemy[],
   config: GameConfig
 ): { 
   damageResult: DamageResult; 
@@ -179,10 +226,12 @@ export function executeEnemyIntent(
   logs: BattleLogEntry[];
   newPlayerHp: number;
   newPlayerShield: number;
+  newEnemies: Enemy[];
   effect?: string;
 } {
   const logs: BattleLogEntry[] = [];
   const intent = enemy.intent;
+  let newEnemies = [...enemies];
   
   let baseDamage = 0;
   let guaranteedCrit = false;
@@ -216,7 +265,45 @@ export function executeEnemyIntent(
       break;
     }
     case 'repair':
-      logs.push(createLog('enemy', 'heal', `${enemy.name} 进行维修，恢复 ${intent.value} HP`, intent.value, 1));
+      if (enemy.role === 'supply' && enemy.healAmount) {
+        const targetId = enemy.targetId;
+        if (targetId) {
+          const targetEnemy = newEnemies.find(e => e.id === targetId && !e.isDestroyed);
+          if (targetEnemy) {
+            const healAmount = Math.min(intent.value, targetEnemy.maxHp - targetEnemy.hp);
+            newEnemies = newEnemies.map(e => 
+              e.id === targetId 
+                ? { ...e, hp: Math.min(e.maxHp, e.hp + healAmount) }
+                : e
+            );
+            logs.push(createLog('enemy', 'heal', `${enemy.name} 为 ${targetEnemy.name} 恢复 ${healAmount} HP`, healAmount, 1));
+          } else {
+            const healAmount = Math.min(intent.value, enemy.maxHp - enemy.hp);
+            newEnemies = newEnemies.map(e => 
+              e.id === enemy.id 
+                ? { ...e, hp: Math.min(e.maxHp, e.hp + healAmount) }
+                : e
+            );
+            logs.push(createLog('enemy', 'heal', `${enemy.name} 自我修复 ${healAmount} HP`, healAmount, 1));
+          }
+        } else {
+          const healAmount = Math.min(intent.value, enemy.maxHp - enemy.hp);
+          newEnemies = newEnemies.map(e => 
+            e.id === enemy.id 
+              ? { ...e, hp: Math.min(e.maxHp, e.hp + healAmount) }
+              : e
+          );
+          logs.push(createLog('enemy', 'heal', `${enemy.name} 自我修复 ${healAmount} HP`, healAmount, 1));
+        }
+      } else {
+        const healAmount = Math.min(intent.value, enemy.maxHp - enemy.hp);
+        newEnemies = newEnemies.map(e => 
+          e.id === enemy.id 
+            ? { ...e, hp: Math.min(e.maxHp, e.hp + healAmount) }
+            : e
+        );
+        logs.push(createLog('enemy', 'heal', `${enemy.name} 进行维修，恢复 ${healAmount} HP`, healAmount, 1));
+      }
       break;
   }
 
@@ -250,12 +337,24 @@ export function executeEnemyIntent(
     logs.push(createLog('player', 'damage', `受到 ${shieldResult.damage} 点伤害`, shieldResult.damage, 1));
   }
 
+  if (specialEffect === 'heal_allies') {
+    const healAmount = enemy.healAmount || Math.floor(enemy.maxHp * 0.1);
+    newEnemies = newEnemies.map(e => {
+      if (!e.isDestroyed) {
+        return { ...e, hp: Math.min(e.maxHp, e.hp + healAmount) };
+      }
+      return e;
+    });
+    logs.push(createLog('enemy', 'heal', `${enemy.name} 为所有友军恢复 ${healAmount} HP`, healAmount, 1));
+  }
+
   return {
     damageResult,
     shieldResult,
     logs,
     newPlayerHp,
     newPlayerShield,
+    newEnemies,
     effect: specialEffect,
   };
 }
@@ -263,12 +362,13 @@ export function executeEnemyIntent(
 export function executePlayerActions(
   dice: Die[],
   player: Ship,
-  enemy: Enemy,
+  enemies: Enemy[],
+  selectedTargetId: string | null,
   config: GameConfig
 ): {
   logs: BattleLogEntry[];
   newPlayer: Ship;
-  newEnemy: Enemy;
+  newEnemies: Enemy[];
   totalDamageDealt: number;
   totalHealDone: number;
   totalShieldGained: number;
@@ -277,7 +377,7 @@ export function executePlayerActions(
 } {
   const logs: BattleLogEntry[] = [];
   let newPlayer = { ...player };
-  let newEnemy = { ...enemy };
+  let newEnemies = [...enemies];
   let totalDamageDealt = 0;
   let totalHealDone = 0;
   let totalShieldGained = 0;
@@ -285,15 +385,10 @@ export function executePlayerActions(
   let playerEvasionBonus = 0;
   let enemyEvasionReduction = 0;
 
-  const totalDicePoints = dice.reduce((sum, d) => sum + d.value, 0);
-  const energyCost = Math.floor(totalDicePoints * config.energyCostPerPoint);
+  const energyCost = calculateEnergyCost(dice, config, newEnemies);
   const actualEnergyCost = Math.min(newPlayer.energy, energyCost);
   const energyBefore = newPlayer.energy;
   newPlayer.energy = Math.max(0, newPlayer.energy - actualEnergyCost);
-
-  // #region debug-point H1:energy-cost
-  fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"battle-mechanics-bugs",runId:"pre-fix",hypothesisId:"H1",location:"battle.ts:282",msg:"[DEBUG] Energy cost calculation",data:{totalDicePoints,energyCostPerPoint:config.energyCostPerPoint,energyCost,actualEnergyCost,energyBefore,energyAfter:newPlayer.energy},ts:Date.now()})}).catch(()=>{});
-  // #endregion
 
   if (actualEnergyCost > 0) {
     logs.push(createLog('player', 'effect', `消耗 ${actualEnergyCost} 能量`, actualEnergyCost, 1));
@@ -301,6 +396,11 @@ export function executePlayerActions(
 
   const energyShortage = energyCost > player.energy;
   const efficiencyPenalty = energyShortage ? 0.5 : 1;
+
+  const activeJammers = newEnemies.filter(e => !e.isDestroyed && e.role === 'jammer' && e.energyCostIncrease);
+  if (activeJammers.length > 0) {
+    logs.push(createLog('system', 'effect', `干扰无人机增加了 ${activeJammers.reduce((sum, j) => sum + (j.energyCostIncrease || 0), 0)} 能量消耗`, undefined, 1));
+  }
 
   const allocations = getAllocations(dice);
 
@@ -323,7 +423,6 @@ export function executePlayerActions(
       allocation.cabinType,
       allocation.totalPoints * efficiencyPenalty,
       newPlayer,
-      newEnemy,
       config
     );
 
@@ -332,48 +431,61 @@ export function executePlayerActions(
     switch (allocation.cabinType) {
       case 'weapon': {
         if (!isOverheated) {
-          const weaponDice = dice.filter(d => d.assignedTo === 'weapon');
+          const targetId = allocation.targetId || selectedTargetId;
+          const targetEnemy = targetId 
+            ? newEnemies.find(e => e.id === targetId && !e.isDestroyed)
+            : newEnemies.find(e => !e.isDestroyed);
+
+          if (!targetEnemy) {
+            logs.push(createLog('system', 'effect', '没有可攻击的目标', undefined, 1));
+            break;
+          }
+
+          const weaponDice = dice.filter(d => allocation.diceIds.includes(d.id));
           const sixCount = weaponDice.filter(d => d.value === 6).length;
           const bonusCritRate = sixCount * config.critBonusRate;
           const guaranteedCrit = sixCount >= 2;
           const totalCritRate = Math.min(0.9, player.critRate + bonusCritRate);
 
-          // #region debug-point H2:six-crit-calc
-          fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"battle-mechanics-bugs",runId:"pre-fix",hypothesisId:"H2",location:"battle.ts:324",msg:"[DEBUG] Six-dice crit rate calculation",data:{weaponDice:weaponDice.map(d=>({id:d.id,value:d.value})),sixCount,bonusCritRate,baseCritRate:player.critRate,totalCritRate,critBonusRate:config.critBonusRate},ts:Date.now()})}).catch(()=>{});
-          // #endregion
-
           const damageResult = calculateDamage(
             effect.value,
             totalCritRate,
-            Math.max(0, newEnemy.evasion - enemyEvasionReduction),
-            newEnemy.defense,
+            Math.max(0, targetEnemy.evasion - enemyEvasionReduction),
+            targetEnemy.defense,
             config,
             guaranteedCrit
           );
 
+          const targetIndex = newEnemies.findIndex(e => e.id === targetEnemy.id);
+
           if (damageResult.isMiss) {
-            logs.push(createLog('enemy', 'miss', '敌方闪避了攻击！', undefined, 1));
+            logs.push(createLog('enemy', 'miss', `${targetEnemy.name} 闪避了攻击！`, undefined, 1));
           } else {
-            const shieldAbsorption = applyShieldAbsorption(damageResult, newEnemy.shield, config);
+            const shieldAbsorption = applyShieldAbsorption(damageResult, newEnemies[targetIndex].shield, config);
             
             if (shieldAbsorption.shieldAbsorbed > 0) {
-              logs.push(createLog('enemy', 'shield', `敌方护盾吸收 ${shieldAbsorption.shieldAbsorbed} 伤害`, shieldAbsorption.shieldAbsorbed, 1));
+              logs.push(createLog('enemy', 'shield', `${targetEnemy.name} 护盾吸收 ${shieldAbsorption.shieldAbsorbed} 伤害`, shieldAbsorption.shieldAbsorbed, 1));
             }
             
             if (damageResult.isCrit) {
               logs.push(createLog('player', 'crit', '暴击！', damageResult.damage, 1));
             }
 
-            // #region debug-point H2:crit-result
-            fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"battle-mechanics-bugs",runId:"pre-fix",hypothesisId:"H2",location:"battle.ts:346",msg:"[DEBUG] Crit result",data:{damage:damageResult.damage,isCrit:damageResult.isCrit,isMiss:damageResult.isMiss,shieldAbsorbed:0},ts:Date.now()})}).catch(()=>{});
-            // #endregion
+            newEnemies[targetIndex] = {
+              ...newEnemies[targetIndex],
+              shield: shieldAbsorption.remainingShield,
+              hp: Math.max(0, newEnemies[targetIndex].hp - shieldAbsorption.damage),
+            };
 
-            newEnemy.shield = shieldAbsorption.remainingShield;
-            newEnemy.hp = Math.max(0, newEnemy.hp - shieldAbsorption.damage);
+            if (newEnemies[targetIndex].hp <= 0) {
+              newEnemies[targetIndex].isDestroyed = true;
+              logs.push(createLog('enemy', 'effect', `${targetEnemy.name} 被摧毁！`, undefined, 1));
+            }
+
             totalDamageDealt += shieldAbsorption.damage;
             
             if (shieldAbsorption.damage > 0) {
-              logs.push(createLog('enemy', 'damage', `敌方受到 ${shieldAbsorption.damage} 点伤害`, shieldAbsorption.damage, 1));
+              logs.push(createLog('enemy', 'damage', `${targetEnemy.name} 受到 ${shieldAbsorption.damage} 点伤害`, shieldAbsorption.damage, 1));
             }
           }
         }
@@ -418,7 +530,10 @@ export function executePlayerActions(
   }
 
   newPlayer.evasion = Math.min(0.8, player.evasion + playerEvasionBonus);
-  newEnemy.evasion = Math.max(0, enemy.evasion - enemyEvasionReduction);
+  newEnemies = newEnemies.map(e => ({
+    ...e,
+    evasion: Math.max(0, e.evasion - enemyEvasionReduction),
+  }));
 
   newPlayer.cabins = newPlayer.cabins.map(c => {
     if (damagedCabins.includes(c.type)) {
@@ -431,15 +546,18 @@ export function executePlayerActions(
     return c;
   });
 
-  newEnemy.abilities = newEnemy.abilities.map(a => ({
-    ...a,
-    currentCooldown: Math.max(0, a.currentCooldown - 1),
+  newEnemies = newEnemies.map(enemy => ({
+    ...enemy,
+    abilities: enemy.abilities.map(a => ({
+      ...a,
+      currentCooldown: Math.max(0, a.currentCooldown - 1),
+    })),
   }));
 
   return {
     logs,
     newPlayer,
-    newEnemy,
+    newEnemies,
     totalDamageDealt,
     totalHealDone,
     totalShieldGained,
@@ -466,17 +584,18 @@ function createLog(
   };
 }
 
-export function checkBattleEnd(player: Ship, enemy: Enemy): 'ongoing' | 'victory' | 'defeat' {
+export function checkBattleEnd(player: Ship, enemies: Enemy[]): 'ongoing' | 'victory' | 'defeat' {
   if (player.hp <= 0) return 'defeat';
-  if (enemy.hp <= 0) return 'victory';
+  const allDestroyed = enemies.every(e => e.isDestroyed);
+  if (allDestroyed) return 'victory';
   return 'ongoing';
 }
 
-export function calculateReward(result: 'victory' | 'defeat' | 'fled', turns: number, difficulty: number): number {
+export function calculateReward(result: 'victory' | 'defeat' | 'fled', turns: number, difficulty: number, enemyCount: number): number {
   if (result === 'defeat') return 0;
   if (result === 'fled') return 0;
   
-  const baseReward = 10 * difficulty;
+  const baseReward = 10 * difficulty * enemyCount;
   const turnBonus = Math.max(0, 10 - turns) * difficulty;
   return baseReward + turnBonus;
 }
@@ -494,4 +613,14 @@ export function getIntentColor(intent: EnemyIntent): string {
     case 'repair': return 'text-neon-green';
     default: return 'text-gray-400';
   }
+}
+
+export function getDefaultTarget(enemies: Enemy[]): string | null {
+  const activeEnemies = enemies.filter(e => !e.isDestroyed);
+  if (activeEnemies.length === 0) return null;
+  
+  const mothership = activeEnemies.find(e => e.role === 'mothership');
+  if (mothership) return mothership.id;
+  
+  return activeEnemies[0].id;
 }

@@ -3,7 +3,7 @@ import type {
   BattleState, BattleRecord, BattleLogEntry, 
   Enemy, ReplayData, ReplayAction
 } from '../types';
-import { getRandomEnemy, generateEnemyIntent } from '../data/enemies';
+import { getRandomEnemyGroup, generateEnemyIntent } from '../data/enemies';
 import { useShipStore } from './useShipStore';
 import { useDiceStore } from './useDiceStore';
 import { useConfigStore } from './useConfigStore';
@@ -12,6 +12,7 @@ import {
   executeEnemyIntent, 
   checkBattleEnd,
   calculateReward,
+  getDefaultTarget,
 } from '../utils/battle';
 import { addBattleRecord, loadBattleHistory, updateStats } from '../utils/storage';
 import { unassignAllDice } from '../utils/dice';
@@ -38,6 +39,8 @@ interface GameState {
   setReplaySpeed: (speed: number) => void;
   setDifficulty: (difficulty: number) => void;
   resetBattle: () => void;
+  setSelectedTarget: (targetId: string | null) => void;
+  setDieTarget: (dieId: string, targetId: string | null) => void;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -61,20 +64,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     player.energy = player.maxEnergy;
     player.cabins = player.cabins.map(c => ({ ...c, damaged: false, cooldown: 0 }));
     
-    const enemy = getRandomEnemy(currentDifficulty);
+    const enemies = getRandomEnemyGroup(currentDifficulty);
+    const selectedTargetId = getDefaultTarget(enemies);
+    
+    const enemyNames = enemies.map(e => e.name).join('、');
     
     const battleState: BattleState = {
       id: `battle_${Date.now()}`,
       turn: 1,
       phase: 'player',
       player,
-      enemy,
+      enemies,
+      selectedTargetId,
       logs: [{
         id: `log_${Date.now()}_start`,
         turn: 1,
         type: 'system',
         source: 'system',
-        message: `战斗开始！遭遇 ${enemy.name}！`,
+        message: `战斗开始！遭遇 ${enemyNames}！`,
         timestamp: Date.now(),
       }],
       result: 'ongoing',
@@ -97,6 +104,30 @@ export const useGameStore = create<GameState>((set, get) => ({
     useDiceStore.getState().resetDice();
   },
   
+  setSelectedTarget: (targetId: string | null) => {
+    const { battleState } = get();
+    if (!battleState) return;
+    
+    set({
+      battleState: {
+        ...battleState,
+        selectedTargetId: targetId,
+      },
+    });
+  },
+  
+  setDieTarget: (dieId: string, targetId: string | null) => {
+    const diceStore = useDiceStore.getState();
+    const die = diceStore.dice.find(d => d.id === dieId);
+    if (!die || die.assignedTo !== 'weapon') return;
+    
+    diceStore.setDice(
+      diceStore.dice.map(d => 
+        d.id === dieId ? { ...d, targetId } : d
+      )
+    );
+  },
+  
   confirmTurn: () => {
     const { battleState, replayData } = get();
     if (!battleState || battleState.phase !== 'player') return;
@@ -106,29 +137,35 @@ export const useGameStore = create<GameState>((set, get) => ({
     const shipStore = useShipStore.getState();
     
     const { dice } = diceStore;
-    const wasDefending = battleState.enemy.intent.type === 'defend';
-    let originalDefense = battleState.enemy.defense;
     
-    let preparedEnemy = { ...battleState.enemy };
-    if (wasDefending) {
-      preparedEnemy.defense = preparedEnemy.defense + 0.2;
-    }
+    const originalDefenses: Record<string, number> = {};
+    battleState.enemies.forEach(e => {
+      originalDefenses[e.id] = e.defense;
+    });
+    
+    let preparedEnemies = battleState.enemies.map(enemy => {
+      if (!enemy.isDestroyed && enemy.intent.type === 'defend') {
+        return { ...enemy, defense: enemy.defense + 0.2 };
+      }
+      return { ...enemy };
+    });
     
     const playerResult = executePlayerActions(
       dice,
       battleState.player,
-      preparedEnemy,
+      preparedEnemies,
+      battleState.selectedTargetId,
       config
     );
     
     let newState: BattleState = {
       ...battleState,
       player: playerResult.newPlayer,
-      enemy: playerResult.newEnemy,
+      enemies: playerResult.newEnemies,
       logs: [...battleState.logs, ...playerResult.logs.map(l => ({ ...l, turn: battleState.turn }))],
     };
     
-    const result = checkBattleEnd(newState.player, newState.enemy);
+    const result = checkBattleEnd(newState.player, newState.enemies);
     if (result !== 'ongoing') {
       get().endBattle(result);
       return;
@@ -136,133 +173,154 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     newState.phase = 'enemy';
     
-    if (newState.enemy.intent.type === 'repair') {
-      const healAmount = newState.enemy.intent.value;
-      newState.enemy = {
-        ...newState.enemy,
-        hp: Math.min(newState.enemy.maxHp, newState.enemy.hp + healAmount),
+    let currentPlayer = { ...newState.player };
+    let currentEnemies = [...newState.enemies];
+    let allEnemyLogs: BattleLogEntry[] = [];
+    let totalDamageTaken = 0;
+    
+    for (let i = 0; i < currentEnemies.length; i++) {
+      const enemy = currentEnemies[i];
+      if (enemy.isDestroyed) continue;
+      
+      if (enemy.intent.type === 'special') {
+        const abilityName = enemy.intent.description.replace('准备释放 ', '');
+        const ability = enemy.abilities.find(a => a.name === abilityName && a.currentCooldown === 0);
+        if (ability) {
+          currentEnemies[i] = {
+            ...currentEnemies[i],
+            abilities: currentEnemies[i].abilities.map(a => 
+              a.id === ability.id ? { ...a, currentCooldown: a.cooldown } : a
+            ),
+          };
+        }
+      }
+      
+      const enemyResult = executeEnemyIntent(
+        currentEnemies[i],
+        currentPlayer,
+        currentEnemies,
+        config
+      );
+      
+      currentPlayer = {
+        ...currentPlayer,
+        hp: enemyResult.newPlayerHp,
+        shield: enemyResult.newPlayerShield,
       };
-    }
-    
-    const enemyResult = executeEnemyIntent(
-      newState.enemy,
-      newState.player,
-      config
-    );
-    
-    if (newState.enemy.intent.type === 'special') {
-      const abilityName = newState.enemy.intent.description.replace('准备释放 ', '');
-      const ability = newState.enemy.abilities.find(a => a.name === abilityName && a.currentCooldown === 0);
-      if (ability) {
-        newState.enemy = {
-          ...newState.enemy,
-          abilities: newState.enemy.abilities.map(a => 
-            a.id === ability.id ? { ...a, currentCooldown: a.cooldown } : a
-          ),
+      
+      currentEnemies = enemyResult.newEnemies;
+      
+      if (enemyResult.effect === 'reduce_evasion') {
+        currentPlayer = {
+          ...currentPlayer,
+          evasion: Math.max(0, currentPlayer.evasion - 0.1),
         };
       }
-    }
-    
-    let enemyHp = newState.player.hp;
-    let enemyShield = newState.player.shield;
-    
-    if (enemyResult.effect === 'reduce_evasion') {
-      newState.player = {
-        ...newState.player,
-        evasion: Math.max(0, newState.player.evasion - 0.1),
-      };
-    }
-    
-    if (enemyResult.effect === 'damage_cabin') {
-      const undamagedCabins = newState.player.cabins.filter(c => !c.damaged);
-      if (undamagedCabins.length > 0) {
-        const randomCabin = undamagedCabins[Math.floor(Math.random() * undamagedCabins.length)];
-        newState.player = {
-          ...newState.player,
-          cabins: newState.player.cabins.map(c => 
-            c.id === randomCabin.id 
-              ? { ...c, damaged: true, cooldown: config.repairCooldown }
-              : c
-          ),
-        };
+      
+      if (enemyResult.effect === 'damage_cabin') {
+        const undamagedCabins = currentPlayer.cabins.filter(c => !c.damaged);
+        if (undamagedCabins.length > 0) {
+          const randomCabin = undamagedCabins[Math.floor(Math.random() * undamagedCabins.length)];
+          currentPlayer = {
+            ...currentPlayer,
+            cabins: currentPlayer.cabins.map(c => 
+              c.id === randomCabin.id 
+                ? { ...c, damaged: true, cooldown: config.repairCooldown }
+                : c
+            ),
+          };
+          enemyResult.logs.push({
+            id: `log_${Date.now()}_cabin_${i}`,
+            turn: battleState.turn,
+            type: 'effect',
+            source: 'enemy',
+            message: `${randomCabin.name} 被损坏！`,
+            timestamp: Date.now(),
+          });
+        }
+      }
+      
+      if (enemyResult.effect === 'heal_hp') {
+        const healAmount = Math.floor(enemy.maxHp * 0.15);
+        const enemyIndex = currentEnemies.findIndex(e => e.id === enemy.id);
+        if (enemyIndex >= 0) {
+          currentEnemies[enemyIndex] = {
+            ...currentEnemies[enemyIndex],
+            hp: Math.min(currentEnemies[enemyIndex].maxHp, currentEnemies[enemyIndex].hp + healAmount),
+          };
+        }
         enemyResult.logs.push({
-          id: `log_${Date.now()}_cabin`,
+          id: `log_${Date.now()}_heal_${i}`,
           turn: battleState.turn,
-          type: 'effect',
+          type: 'heal',
           source: 'enemy',
-          message: `${randomCabin.name} 被损坏！`,
+          message: `${enemy.name} 恢复 ${healAmount} HP`,
+          value: healAmount,
           timestamp: Date.now(),
         });
       }
+      
+      if (enemyResult.effect === 'heal_shield') {
+        const shieldAmount = Math.floor(enemy.maxShield * 0.3);
+        const enemyIndex = currentEnemies.findIndex(e => e.id === enemy.id);
+        if (enemyIndex >= 0) {
+          currentEnemies[enemyIndex] = {
+            ...currentEnemies[enemyIndex],
+            shield: Math.min(currentEnemies[enemyIndex].maxShield, currentEnemies[enemyIndex].shield + shieldAmount),
+          };
+        }
+        enemyResult.logs.push({
+          id: `log_${Date.now()}_shield_${i}`,
+          turn: battleState.turn,
+          type: 'shield',
+          source: 'enemy',
+          message: `${enemy.name} 恢复 ${shieldAmount} 护盾`,
+          value: shieldAmount,
+          timestamp: Date.now(),
+        });
+      }
+      
+      totalDamageTaken += enemyResult.shieldResult.damage;
+      allEnemyLogs = [...allEnemyLogs, ...enemyResult.logs.map(l => ({ ...l, turn: battleState.turn }))];
+      
+      const midBattleResult = checkBattleEnd(currentPlayer, currentEnemies);
+      if (midBattleResult !== 'ongoing') {
+        break;
+      }
     }
-    
-    if (enemyResult.effect === 'heal_hp') {
-      const healAmount = Math.floor(newState.enemy.maxHp * 0.15);
-      newState.enemy = {
-        ...newState.enemy,
-        hp: Math.min(newState.enemy.maxHp, newState.enemy.hp + healAmount),
-      };
-      enemyResult.logs.push({
-        id: `log_${Date.now()}_heal`,
-        turn: battleState.turn,
-        type: 'heal',
-        source: 'enemy',
-        message: `敌方恢复 ${healAmount} HP`,
-        value: healAmount,
-        timestamp: Date.now(),
-      });
-    }
-    
-    if (enemyResult.effect === 'heal_shield') {
-      const shieldAmount = Math.floor(newState.enemy.maxShield * 0.3);
-      newState.enemy = {
-        ...newState.enemy,
-        shield: Math.min(newState.enemy.maxShield, newState.enemy.shield + shieldAmount),
-      };
-      enemyResult.logs.push({
-        id: `log_${Date.now()}_shield`,
-        turn: battleState.turn,
-        type: 'shield',
-        source: 'enemy',
-        message: `敌方恢复 ${shieldAmount} 护盾`,
-        value: shieldAmount,
-        timestamp: Date.now(),
-      });
-    }
-    
-    enemyHp = enemyResult.newPlayerHp;
-    enemyShield = enemyResult.newPlayerShield;
     
     newState = {
       ...newState,
-      player: { ...newState.player, hp: enemyHp, shield: enemyShield },
-      logs: [...newState.logs, ...enemyResult.logs.map(l => ({ ...l, turn: battleState.turn }))],
+      player: currentPlayer,
+      enemies: currentEnemies,
+      logs: [...newState.logs, ...allEnemyLogs],
     };
     
-    const finalResult = checkBattleEnd(newState.player, newState.enemy);
+    const finalResult = checkBattleEnd(newState.player, newState.enemies);
     if (finalResult !== 'ongoing') {
       get().endBattle(finalResult);
       return;
     }
     
-    if (wasDefending) {
-      newState.enemy = {
-        ...newState.enemy,
-        defense: originalDefense,
-      };
-    }
-
-    // #region debug-point H4:defense-rollback
-    fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"battle-mechanics-bugs",runId:"pre-fix",hypothesisId:"H4",location:"useGameStore.ts:259",msg:"[DEBUG] Defense rollback",data:{wasDefending,defenseBeforeRollback:newState.enemy.defense,defenseAfterRollback:wasDefending?originalDefense:newState.enemy.defense,originalDefense,nextIntentWillBeGenerated:true},ts:Date.now()})}).catch(()=>{});
-    // #endregion
+    newState.enemies = newState.enemies.map(enemy => {
+      if (battleState.enemies.find(e => e.id === enemy.id)?.intent.type === 'defend') {
+        return { ...enemy, defense: originalDefenses[enemy.id] };
+      }
+      return enemy;
+    });
     
-    newState.enemy = generateEnemyIntent(newState.enemy);
+    newState.enemies = newState.enemies.map(enemy => generateEnemyIntent(enemy));
     
     const playerEvasionReset = useShipStore.getState().ship.evasion;
     newState.player = {
       ...newState.player,
       evasion: playerEvasionReset,
     };
+    
+    const activeEnemies = newState.enemies.filter(e => !e.isDestroyed);
+    if (newState.selectedTargetId && !activeEnemies.find(e => e.id === newState.selectedTargetId)) {
+      newState.selectedTargetId = getDefaultTarget(newState.enemies);
+    }
     
     newState.turn += 1;
     newState.phase = 'player';
@@ -276,7 +334,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       turn: battleState.turn,
       phase: 'player',
       action: 'turn',
-      payload: { dice: JSON.parse(JSON.stringify(dice)) },
+      payload: { 
+        dice: JSON.parse(JSON.stringify(dice)),
+        selectedTargetId: newState.selectedTargetId,
+      },
       resultingState: JSON.parse(JSON.stringify(newState)),
     };
     
@@ -294,7 +355,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       ...shipStore.stats,
       totalTurns: shipStore.stats.totalTurns + 1,
       totalDamageDealt: shipStore.stats.totalDamageDealt + playerResult.totalDamageDealt,
-      totalDamageTaken: shipStore.stats.totalDamageTaken + (enemyResult.shieldResult.damage),
+      totalDamageTaken: shipStore.stats.totalDamageTaken + totalDamageTaken,
     };
     updateStats(newStats);
     shipStore.stats = newStats;
@@ -311,10 +372,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!battleState) return;
     
     const shipStore = useShipStore.getState();
-    const config = useConfigStore.getState().config;
     
+    const activeEnemyCount = battleState.enemies.filter(e => !e.isDestroyed).length;
     const reward = result === 'victory' 
-      ? calculateReward(result, battleState.turn, get().currentDifficulty)
+      ? calculateReward(result, battleState.turn, get().currentDifficulty, battleState.enemies.length)
       : 0;
     
     const newState: BattleState = {
@@ -331,10 +392,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       endTime: Date.now(),
       result,
       turns: battleState.turn,
-      enemyType: battleState.enemy.type,
-      enemyName: battleState.enemy.name,
+      enemyTypes: battleState.enemies.map(e => e.type),
+      enemyNames: battleState.enemies.map(e => e.name),
       playerHpRemaining: battleState.player.hp,
-      enemyHpRemaining: battleState.enemy.hp,
+      enemiesHpRemaining: battleState.enemies.map(e => e.hp),
       replayData: replayData || { initialState: newState, actions: [] },
       rewardEarned: reward,
     };

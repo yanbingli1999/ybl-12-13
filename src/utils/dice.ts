@@ -7,6 +7,7 @@ export function createDie(id: string): Die {
     value: 0,
     locked: false,
     assignedTo: null,
+    targetId: null,
     isRolling: false,
   };
 }
@@ -49,6 +50,7 @@ export function assignDieToCabin(dice: Die[], dieId: string, cabinType: CabinTyp
       ...die,
       assignedTo: cabinType,
       locked: cabinType !== null,
+      targetId: cabinType === 'weapon' ? die.targetId : null,
     };
   });
 }
@@ -57,6 +59,7 @@ export function unassignAllDice(dice: Die[]): Die[] {
   return dice.map(die => ({
     ...die,
     assignedTo: null,
+    targetId: null,
     locked: false,
   }));
 }
