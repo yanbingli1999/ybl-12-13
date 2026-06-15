@@ -204,7 +204,8 @@ export function calculateEnergyCost(
   config: GameConfig,
   enemies: Enemy[]
 ): number {
-  const totalDicePoints = dice.reduce((sum, d) => sum + d.value, 0);
+  const assignedDice = dice.filter(d => d.assignedTo !== null);
+  const totalDicePoints = assignedDice.reduce((sum, d) => sum + d.value, 0);
   let baseCost = Math.floor(totalDicePoints * config.energyCostPerPoint);
   
   const activeJammers = enemies.filter(e => !e.isDestroyed && e.role === 'jammer' && e.energyCostIncrease);

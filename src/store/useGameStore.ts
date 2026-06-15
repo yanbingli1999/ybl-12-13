@@ -29,7 +29,7 @@ interface GameState {
   startBattle: () => void;
   confirmTurn: () => void;
   fleeBattle: () => void;
-  endBattle: (result: 'victory' | 'defeat' | 'fled') => void;
+  endBattle: (result: 'victory' | 'defeat' | 'fled', finalState?: BattleState) => void;
   addLog: (log: BattleLogEntry) => void;
   loadHistory: () => void;
   startReplay: (recordId: string) => void;
@@ -167,7 +167,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     const result = checkBattleEnd(newState.player, newState.enemies);
     if (result !== 'ongoing') {
-      get().endBattle(result);
+      set({ battleState: newState });
+      get().endBattle(result, newState);
       return;
     }
     
@@ -298,7 +299,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     const finalResult = checkBattleEnd(newState.player, newState.enemies);
     if (finalResult !== 'ongoing') {
-      get().endBattle(finalResult);
+      set({ battleState: newState });
+      get().endBattle(finalResult, newState);
       return;
     }
     
@@ -367,19 +369,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().endBattle('fled');
   },
   
-  endBattle: (result) => {
+  endBattle: (result, finalState) => {
     const { battleState, replayData } = get();
-    if (!battleState) return;
+    const stateToUse = finalState || battleState;
+    if (!stateToUse) return;
     
     const shipStore = useShipStore.getState();
     
-    const activeEnemyCount = battleState.enemies.filter(e => !e.isDestroyed).length;
+    const activeEnemyCount = stateToUse.enemies.filter(e => !e.isDestroyed).length;
     const reward = result === 'victory' 
-      ? calculateReward(result, battleState.turn, get().currentDifficulty, battleState.enemies.length)
+      ? calculateReward(result, stateToUse.turn, get().currentDifficulty, stateToUse.enemies.length)
       : 0;
     
     const newState: BattleState = {
-      ...battleState,
+      ...stateToUse,
       result,
       phase: 'ended',
       endTime: Date.now(),
@@ -387,15 +390,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     };
     
     const newRecord: BattleRecord = {
-      id: battleState.id,
-      startTime: battleState.startTime,
+      id: stateToUse.id,
+      startTime: stateToUse.startTime,
       endTime: Date.now(),
       result,
-      turns: battleState.turn,
-      enemyTypes: battleState.enemies.map(e => e.type),
-      enemyNames: battleState.enemies.map(e => e.name),
-      playerHpRemaining: battleState.player.hp,
-      enemiesHpRemaining: battleState.enemies.map(e => e.hp),
+      turns: stateToUse.turn,
+      enemyTypes: stateToUse.enemies.map(e => e.type),
+      enemyNames: stateToUse.enemies.map(e => e.name),
+      playerHpRemaining: stateToUse.player.hp,
+      enemiesHpRemaining: stateToUse.enemies.map(e => e.hp),
       replayData: replayData || { initialState: newState, actions: [] },
       rewardEarned: reward,
     };
